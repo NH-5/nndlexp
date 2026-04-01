@@ -91,7 +91,7 @@ RUN_CONFIG = {
     "scales": [1.0],
     "num_images": 3,
     "save_dir": None,
-    "log_dir": "./exp2/logs",
+    "log_dir": "./logs",
     "log_name": None,
 }
 
@@ -288,6 +288,7 @@ def build_model(num_classes: int, init_mode: str = "scratch") -> nn.Module:
         model = deeplabv3_resnet50(
             weights=DeepLabV3_ResNet50_Weights.COCO_WITH_VOC_LABELS_V1,
             num_classes=21,
+            aux_loss=True,
         )
         if num_classes != 21:
             classifier_in = model.classifier[-1].in_channels
@@ -297,7 +298,12 @@ def build_model(num_classes: int, init_mode: str = "scratch") -> nn.Module:
                 model.aux_classifier[-1] = nn.Conv2d(aux_in, num_classes, kernel_size=1)
         return model
 
-    model = deeplabv3_resnet50(weights=None, weights_backbone=None, num_classes=num_classes)
+    model = deeplabv3_resnet50(
+        weights=None,
+        weights_backbone=None,
+        num_classes=num_classes,
+        aux_loss=True,
+    )
     return model
 
 
