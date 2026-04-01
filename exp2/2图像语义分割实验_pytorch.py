@@ -84,7 +84,7 @@ RUN_CONFIG = {
     "momentum": 0.9,
     "min_scale": 0.5,
     "max_scale": 2.0,
-    "output": "./exp2/model_pytorch.pth",
+    "output": "./model/model_pytorch.pth",
     "checkpoint": None,
     "init_mode": "scratch",
     "flip": True,
