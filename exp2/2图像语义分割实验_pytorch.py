@@ -326,7 +326,7 @@ def preprocess_for_inference(image, image_mean, image_std, crop_size):
 
 @torch.inference_mode()
 def predict_probabilities(args, model, images):
-    device = torch.device(args.device)
+    device = resolve_device(args.device)
     batch = []
     resize_hw = []
     for image in images:
@@ -357,11 +357,11 @@ def predict_probabilities(args, model, images):
 def predict_mask_multi_scale(args, model, images):
     base_crop_size = args.crop_size
     all_probs = None
+    device = resolve_device(args.device)
     for scale in args.scales:
         scaled_crop = int((base_crop_size - 1) * scale) + 1
         image_mean = args.image_mean
         image_std = args.image_std
-        device = args.device
         batch = []
         resize_hw = []
         for image in images:
