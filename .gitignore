@@ -1,0 +1,27 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# shit of macos
+.DS_Store
+
+# exp1
+MNIST_dataset
+MNIST_Data
+logs
+*.typ
+*.jpg
+report.pdf
+*.zip
+
+# exp2
+downloads
+VOC2012
+*.docx
