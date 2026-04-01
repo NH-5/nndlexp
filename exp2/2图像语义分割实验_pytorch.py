@@ -1,4 +1,7 @@
+import json
+import logging
 import random
+from datetime import datetime
 from pathlib import Path
 
 import cv2
@@ -64,6 +67,7 @@ VOC_COLORS = [
 RUN_CONFIG = {
     "command": "train",
     "data_root": "./VOC2012",
+    "project_root": "./exp2",
     "crop_size": 513,
     "batch_size": 4,
     "num_classes": 21,
@@ -87,6 +91,8 @@ RUN_CONFIG = {
     "scales": [1.0],
     "num_images": 3,
     "save_dir": None,
+    "log_dir": "./exp2/logs",
+    "log_name": None,
 }
 
 
@@ -95,6 +101,43 @@ def set_seed(seed: int) -> None:
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+
+
+def setup_logger(log_dir: Path, log_name: str | None, command: str) -> logging.Logger:
+    log_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    file_stem = log_name or f"{command}_{timestamp}"
+    log_path = log_dir / f"{file_stem}.log"
+
+    logger = logging.getLogger(f"exp2_pytorch_{file_stem}")
+    logger.setLevel(logging.INFO)
+    logger.handlers.clear()
+    logger.propagate = False
+
+    formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
+
+    file_handler = logging.FileHandler(log_path, encoding="utf-8")
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+    logger.addHandler(stream_handler)
+
+    logger.info("log file: %s", log_path)
+    return logger
+
+
+def config_to_dict(args) -> dict:
+    config = {}
+    for key, value in vars(args.__class__).items():
+        if key.startswith("__") or callable(value):
+            continue
+        if isinstance(value, Path):
+            config[key] = str(value)
+        else:
+            config[key] = value
+    return config
 
 
 def resolve_device(device_name: str) -> torch.device:
@@ -120,7 +163,7 @@ def dataloader_kwargs(device: torch.device, workers: int):
 
 def build_args_from_config(config):
     normalized = dict(config)
-    for key in {"data_root", "output", "checkpoint", "save_dir"}:
+    for key in {"data_root", "project_root", "output", "checkpoint", "save_dir", "log_dir"}:
         if normalized.get(key) is not None:
             normalized[key] = Path(normalized[key])
     return type("Config", (), normalized)()
@@ -222,7 +265,7 @@ class VOCSegmentationDataset(Dataset):
         return self._normalize(image), mask
 
 
-def create_gray_masks(data_root: Path, overwrite: bool = False):
+def create_gray_masks(data_root: Path, overwrite: bool = False, logger: logging.Logger | None = None):
     color_dir = data_root / "SegmentationClass"
     gray_dir = data_root / "SegmentationClassGray"
     gray_dir.mkdir(parents=True, exist_ok=True)
@@ -233,8 +276,11 @@ def create_gray_masks(data_root: Path, overwrite: bool = False):
             continue
         with Image.open(color_mask) as mask_image:
             Image.fromarray(np.array(mask_image)).save(target)
-
-    print(f"gray mask ready: {gray_dir}")
+    message = f"gray mask ready: {gray_dir}"
+    if logger is None:
+        print(message)
+    else:
+        logger.info(message)
 
 
 def build_model(num_classes: int, init_mode: str = "scratch") -> nn.Module:
@@ -354,18 +400,23 @@ def fast_hist(label_true, label_pred, num_classes, ignore_label):
 
 
 def evaluate(args):
-    create_gray_masks(args.data_root)
+    logger = setup_logger(args.log_dir, args.log_name, args.command)
+    logger.info("start evaluate")
+    logger.info("config: %s", json.dumps(config_to_dict(args), ensure_ascii=False, indent=2))
+    create_gray_masks(args.data_root, logger=logger)
     device = resolve_device(args.device)
-    print(f"using device: {device}")
+    logger.info("using device: %s", device)
 
     model = build_model(args.num_classes, init_mode="scratch").to(device)
     checkpoint = torch.load(args.checkpoint, map_location=device)
     model.load_state_dict(checkpoint["model"] if "model" in checkpoint else checkpoint)
     model.eval()
+    logger.info("loaded checkpoint: %s", args.checkpoint)
 
     val_list = args.data_root / "ImageSets" / "Segmentation" / "val.txt"
     with val_list.open("r", encoding="utf-8") as f:
         image_ids = [line.strip() for line in f if line.strip()]
+    logger.info("validation samples: %d", len(image_ids))
 
     hist = np.zeros((args.num_classes, args.num_classes), dtype=np.float64)
     batch_images = []
@@ -390,7 +441,7 @@ def evaluate(args):
             hist += fast_hist(target.flatten(), pred.flatten(), args.num_classes, args.ignore_label)
             processed += 1
             if processed % 100 == 0:
-                print(f"processed {processed} images")
+                logger.info("processed %d images", processed)
         batch_images = []
         batch_masks = []
 
@@ -401,16 +452,23 @@ def evaluate(args):
             processed += 1
 
     iou = np.diag(hist) / np.maximum(hist.sum(1) + hist.sum(0) - np.diag(hist), 1e-10)
-    print("mean IoU", np.nanmean(iou))
+    mean_iou = float(np.nanmean(iou))
+    logger.info("mean IoU %.6f", mean_iou)
+    logger.info("per-class IoU: %s", np.array2string(iou, precision=4, separator=", "))
 
 
 def train(args):
+    logger = setup_logger(args.log_dir, args.log_name, args.command)
+    logger.info("start train")
+    logger.info("config: %s", json.dumps(config_to_dict(args), ensure_ascii=False, indent=2))
     set_seed(args.seed)
-    create_gray_masks(args.data_root)
+    logger.info("seed set to %d", args.seed)
+    create_gray_masks(args.data_root, logger=logger)
     device = resolve_device(args.device)
-    print(f"using device: {device}")
+    logger.info("using device: %s", device)
     if device.type == "cuda":
         torch.backends.cudnn.benchmark = True
+        logger.info("cudnn benchmark enabled")
 
     dataset = VOCSegmentationDataset(
         data_root=args.data_root,
@@ -430,11 +488,15 @@ def train(args):
         drop_last=True,
         **dataloader_kwargs(device, args.workers),
     )
+    logger.info("training samples: %d", len(dataset))
+    logger.info("steps per epoch: %d", len(loader))
 
     model = build_model(args.num_classes, init_mode=args.init_mode).to(device)
+    logger.info("model init mode: %s", args.init_mode)
     if args.checkpoint and args.checkpoint.exists():
         checkpoint = torch.load(args.checkpoint, map_location=device)
         model.load_state_dict(checkpoint["model"] if "model" in checkpoint else checkpoint, strict=False)
+        logger.info("loaded checkpoint: %s", args.checkpoint)
     elif args.checkpoint:
         raise FileNotFoundError(f"checkpoint 不存在: {args.checkpoint}")
 
@@ -447,6 +509,7 @@ def train(args):
     )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs * len(loader))
     scaler = torch.amp.GradScaler("cuda", enabled=use_cuda_amp(args, device))
+    logger.info("cuda amp enabled: %s", use_cuda_amp(args, device))
 
     model.train()
     global_step = 0
@@ -471,28 +534,43 @@ def train(args):
             if step % 10 == 0:
                 avg_loss = running_loss / step
                 lr = scheduler.get_last_lr()[0]
-                print(f"epoch {epoch}/{args.epochs} step {step}/{len(loader)} loss {avg_loss:.4f} lr {lr:.6f}")
+                logger.info(
+                    "epoch %d/%d step %d/%d loss %.4f lr %.6f",
+                    epoch,
+                    args.epochs,
+                    step,
+                    len(loader),
+                    avg_loss,
+                    lr,
+                )
 
         args.output.parent.mkdir(parents=True, exist_ok=True)
+        epoch_loss = running_loss / max(len(loader), 1)
         torch.save(
             {
                 "model": model.state_dict(),
                 "epoch": epoch,
                 "num_classes": args.num_classes,
+                "config": config_to_dict(args),
             },
             args.output,
         )
-        print(f"saved checkpoint to {args.output}")
+        logger.info("epoch %d finished, average loss %.4f", epoch, epoch_loss)
+        logger.info("saved checkpoint to %s", args.output)
 
 
 def visualize(args):
-    create_gray_masks(args.data_root)
+    logger = setup_logger(args.log_dir, args.log_name, args.command)
+    logger.info("start visualize")
+    logger.info("config: %s", json.dumps(config_to_dict(args), ensure_ascii=False, indent=2))
+    create_gray_masks(args.data_root, logger=logger)
     device = resolve_device(args.device)
-    print(f"using device: {device}")
+    logger.info("using device: %s", device)
     model = build_model(args.num_classes, init_mode="scratch").to(device)
     checkpoint = torch.load(args.checkpoint, map_location=device)
     model.load_state_dict(checkpoint["model"] if "model" in checkpoint else checkpoint)
     model.eval()
+    logger.info("loaded checkpoint: %s", args.checkpoint)
 
     val_list = args.data_root / "ImageSets" / "Segmentation" / "val.txt"
     with val_list.open("r", encoding="utf-8") as f:
@@ -537,13 +615,13 @@ def visualize(args):
 
         pred_classes = [VOC_CLASSES[idx] for idx in np.unique(pred_mask)]
         gt_classes = [VOC_CLASSES[idx] for idx in np.unique(gt_mask)]
-        print(f"{image_id} prediction classes: {pred_classes}")
-        print(f"{image_id} ground truth classes: {gt_classes}")
+        logger.info("%s prediction classes: %s", image_id, pred_classes)
+        logger.info("%s ground truth classes: %s", image_id, gt_classes)
 
         if args.save_dir is not None:
             save_path = args.save_dir / f"{image_id}_vis.png"
             plt.savefig(save_path, bbox_inches="tight", dpi=150)
-            print(f"saved visualization to {save_path}")
+            logger.info("saved visualization to %s", save_path)
             plt.close()
         else:
             plt.show()
