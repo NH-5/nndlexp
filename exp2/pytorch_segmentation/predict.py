@@ -16,6 +16,7 @@ from exp2.pytorch_segmentation.utils import (
     ensure_dir,
     get_device,
     load_checkpoint,
+    resolve_experiment_dir,
     save_json,
     setup_logger,
 )
@@ -41,7 +42,8 @@ def build_parser() -> argparse.ArgumentParser:
     config = ExperimentConfig()
     parser = argparse.ArgumentParser(description="Run inference with DeepLabV3.")
     parser.add_argument("--input", type=Path, required=True)
-    parser.add_argument("--output-dir", type=Path, default=config.outputs_dir / "predictions")
+    parser.add_argument("--output-root", type=Path, default=config.outputs_dir)
+    parser.add_argument("--experiment-name", default="latest")
     parser.add_argument("--checkpoint", type=Path, default=None)
     parser.add_argument("--weights", choices=["none", "voc"], default="none")
     parser.add_argument("--backbone-weights", choices=["none", "imagenet"], default="imagenet")
@@ -60,23 +62,29 @@ def iter_input_images(path: Path) -> list[Path]:
 
 def run_prediction(args: argparse.Namespace) -> None:
     device = get_device(args.device)
-    output_dir = ensure_dir(args.output_dir)
+    experiment_dir = resolve_experiment_dir(args.output_root, args.experiment_name)
     run_stamp = build_run_stamp()
-    logger = setup_logger("segmentation.predict", output_dir / "logs" / f"predict_{run_stamp}.log")
+    predict_dir = ensure_dir(experiment_dir / "predict" / run_stamp)
+    logger = setup_logger("segmentation.predict", predict_dir / f"predict_{run_stamp}.log")
     logger.info("Prediction started")
     logger.info("Run stamp: %s", run_stamp)
     logger.info("Arguments: %s", vars(args))
+    logger.info("Experiment directory: %s", experiment_dir)
+    logger.info("Prediction directory: %s", predict_dir)
 
     model = build_deeplabv3_resnet50(
         num_classes=args.num_classes,
         weights=args.weights,
         backbone_weights=args.backbone_weights,
     ).to(device)
-    if args.checkpoint is not None:
-        checkpoint = load_checkpoint(args.checkpoint, map_location="cpu")
+    checkpoint_path = args.checkpoint
+    if checkpoint_path is None and args.weights == "none":
+        checkpoint_path = experiment_dir / "train" / "best.pth"
+    if checkpoint_path is not None:
+        checkpoint = load_checkpoint(checkpoint_path, map_location="cpu")
         state_dict = checkpoint["model"] if "model" in checkpoint else checkpoint
         model.load_state_dict(state_dict)
-        logger.info("Loaded checkpoint: %s", args.checkpoint)
+        logger.info("Loaded checkpoint: %s", checkpoint_path)
     model.eval()
 
     transform = PredictTransform(long_size=args.long_size)
@@ -98,8 +106,8 @@ def run_prediction(args: argparse.Namespace) -> None:
 
         mask = colorize_mask(prediction)
         overlay = blend_overlay(image, prediction)
-        mask_path = output_dir / f"{image_path.stem}_mask.png"
-        overlay_path = output_dir / f"{image_path.stem}_overlay.png"
+        mask_path = predict_dir / f"{image_path.stem}_mask.png"
+        overlay_path = predict_dir / f"{image_path.stem}_overlay.png"
         mask.save(mask_path)
         overlay.save(overlay_path)
         prediction_records.append(
@@ -112,11 +120,13 @@ def run_prediction(args: argparse.Namespace) -> None:
         )
         logger.info("Saved prediction outputs for %s", image_path.name)
 
-    manifest_path = output_dir / f"prediction_manifest_{run_stamp}.json"
+    manifest_path = predict_dir / f"prediction_manifest_{run_stamp}.json"
     save_json(
         {
             "run_stamp": run_stamp,
-            "checkpoint": args.checkpoint,
+            "experiment_dir": experiment_dir,
+            "predict_dir": predict_dir,
+            "checkpoint": checkpoint_path,
             "weights": args.weights,
             "backbone_weights": args.backbone_weights,
             "device": str(device),

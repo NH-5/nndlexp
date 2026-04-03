@@ -13,8 +13,9 @@ from exp2.pytorch_segmentation.predict import run_prediction
 
 CONFIG = {
     "input": PROJECT_ROOT / "exp2" / "VOC2012" / "JPEGImages" / "2007_000032.jpg",
-    "output_dir": PROJECT_ROOT / "exp2" / "outputs" / "predictions",
-    "checkpoint": PROJECT_ROOT / "exp2" / "outputs" / "deeplabv3_resnet50" / "best.pth",
+    "output_root": PROJECT_ROOT / "exp2" / "outputs",
+    "experiment_name": "latest",
+    "checkpoint": None,
     "weights": "none",
     "backbone_weights": "imagenet",
     "num_classes": 21,

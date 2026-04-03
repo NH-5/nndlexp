@@ -16,6 +16,7 @@ from exp2.pytorch_segmentation.utils import (
     ensure_dir,
     get_device,
     load_checkpoint,
+    resolve_experiment_dir,
     save_json,
     setup_logger,
 )
@@ -34,18 +35,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-workers", type=int, default=config.num_workers)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--long-size", type=int, default=None)
-    parser.add_argument("--output-dir", type=Path, default=config.outputs_dir / "evaluation")
+    parser.add_argument("--output-root", type=Path, default=config.outputs_dir)
+    parser.add_argument("--experiment-name", default="latest")
     return parser
 
 
 def run_evaluation(args: argparse.Namespace) -> dict[str, float | list[float]]:
     device = get_device(args.device)
-    output_dir = ensure_dir(args.output_dir)
+    experiment_dir = resolve_experiment_dir(args.output_root, args.experiment_name)
     run_stamp = build_run_stamp()
-    logger = setup_logger("segmentation.evaluate", output_dir / "logs" / f"evaluate_{run_stamp}.log")
+    evaluate_dir = ensure_dir(experiment_dir / "evaluate" / run_stamp)
+    logger = setup_logger("segmentation.evaluate", evaluate_dir / f"evaluate_{run_stamp}.log")
     logger.info("Evaluation started")
     logger.info("Run stamp: %s", run_stamp)
     logger.info("Arguments: %s", vars(args))
+    logger.info("Experiment directory: %s", experiment_dir)
+    logger.info("Evaluation directory: %s", evaluate_dir)
 
     dataset = VOCSegmentationDataset(
         data_root=args.data_root,
@@ -68,11 +73,14 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, float | list[float]]:
         backbone_weights=args.backbone_weights,
     ).to(device)
 
-    if args.checkpoint is not None:
-        checkpoint = load_checkpoint(args.checkpoint, map_location="cpu")
+    checkpoint_path = args.checkpoint
+    if checkpoint_path is None and args.weights == "none":
+        checkpoint_path = experiment_dir / "train" / "best.pth"
+    if checkpoint_path is not None:
+        checkpoint = load_checkpoint(checkpoint_path, map_location="cpu")
         state_dict = checkpoint["model"] if "model" in checkpoint else checkpoint
         model.load_state_dict(state_dict)
-        logger.info("Loaded checkpoint: %s", args.checkpoint)
+        logger.info("Loaded checkpoint: %s", checkpoint_path)
 
     metrics = evaluate(
         model=model,
@@ -83,20 +91,22 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, float | list[float]]:
     )
     metrics_payload = {
         "run_stamp": run_stamp,
-        "checkpoint": args.checkpoint,
+        "experiment_dir": experiment_dir,
+        "evaluate_dir": evaluate_dir,
+        "checkpoint": checkpoint_path,
         "weights": args.weights,
         "backbone_weights": args.backbone_weights,
         "split": args.split,
         "device": str(device),
         "metrics": metrics,
     }
-    save_json(metrics_payload, output_dir / f"evaluation_metrics_{run_stamp}.json")
+    save_json(metrics_payload, evaluate_dir / f"evaluation_metrics_{run_stamp}.json")
     logger.info("loss: %.4f", metrics["loss"])
     logger.info("pixel_accuracy: %.4f", metrics["pixel_accuracy"])
     logger.info("mean_iou: %.4f", metrics["mean_iou"])
     for class_name, class_iou in zip(VOC_CLASSES, metrics["per_class_iou"]):
         logger.info("class=%s iou=%.4f", class_name, class_iou)
-    logger.info("Saved evaluation metrics: %s", output_dir / f"evaluation_metrics_{run_stamp}.json")
+    logger.info("Saved evaluation metrics: %s", evaluate_dir / f"evaluation_metrics_{run_stamp}.json")
     return metrics
 
 

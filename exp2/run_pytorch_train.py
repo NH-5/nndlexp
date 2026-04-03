@@ -13,7 +13,8 @@ from exp2.pytorch_segmentation.train import run_training
 
 CONFIG = {
     "data_root": PROJECT_ROOT / "exp2" / "VOC2012",
-    "output_dir": PROJECT_ROOT / "exp2" / "outputs" / "deeplabv3_resnet50",
+    "output_root": PROJECT_ROOT / "exp2" / "outputs",
+    "experiment_name": None,
     "train_split": "train",
     "val_split": "val",
     "epochs": 10,

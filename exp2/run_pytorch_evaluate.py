@@ -13,8 +13,10 @@ from exp2.pytorch_segmentation.evaluate import run_evaluation
 
 CONFIG = {
     "data_root": PROJECT_ROOT / "exp2" / "VOC2012",
+    "output_root": PROJECT_ROOT / "exp2" / "outputs",
+    "experiment_name": "latest",
     "split": "val",
-    "checkpoint": PROJECT_ROOT / "exp2" / "outputs" / "deeplabv3_resnet50" / "best.pth",
+    "checkpoint": None,
     "weights": "none",
     "backbone_weights": "imagenet",
     "num_classes": 21,
@@ -22,7 +24,6 @@ CONFIG = {
     "num_workers": 2,
     "device": "auto",
     "long_size": None,
-    "output_dir": PROJECT_ROOT / "exp2" / "outputs" / "evaluation",
 }
 
 

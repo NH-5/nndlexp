@@ -55,6 +55,46 @@ def build_run_stamp() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
+def get_latest_experiment_marker(output_root: str | Path) -> Path:
+    return Path(output_root) / "latest_experiment.txt"
+
+
+def set_latest_experiment(output_root: str | Path, experiment_dir: str | Path) -> None:
+    marker = get_latest_experiment_marker(output_root)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(str(Path(experiment_dir).resolve()), encoding="utf-8")
+
+
+def get_latest_experiment(output_root: str | Path) -> Path:
+    marker = get_latest_experiment_marker(output_root)
+    if not marker.exists():
+        raise FileNotFoundError(
+            f"Latest experiment marker not found: {marker}. "
+            "Run training first or set experiment_name explicitly."
+        )
+    return Path(marker.read_text(encoding="utf-8").strip())
+
+
+def create_experiment_dir(output_root: str | Path, experiment_name: str | None = None) -> Path:
+    root = ensure_dir(output_root)
+    experiment_name = experiment_name or build_run_stamp()
+    experiment_dir = ensure_dir(root / experiment_name)
+    set_latest_experiment(root, experiment_dir)
+    return experiment_dir
+
+
+def resolve_experiment_dir(output_root: str | Path, experiment_name: str | None = None) -> Path:
+    root = ensure_dir(output_root)
+    if experiment_name in (None, "", "latest"):
+        experiment_dir = get_latest_experiment(root)
+    else:
+        experiment_dir = root / experiment_name
+
+    if not experiment_dir.exists():
+        raise FileNotFoundError(f"Experiment directory not found: {experiment_dir}")
+    return experiment_dir
+
+
 def setup_logger(name: str, log_file: str | Path) -> logging.Logger:
     logger = logging.getLogger(name)
     logger.setLevel(logging.INFO)
