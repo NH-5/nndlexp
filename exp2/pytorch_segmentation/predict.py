@@ -13,6 +13,7 @@ from exp2.pytorch_segmentation.model import build_deeplabv3_resnet50
 from exp2.pytorch_segmentation.transforms import PredictTransform
 from exp2.pytorch_segmentation.utils import (
     build_run_stamp,
+    checkpoint_uses_aux_classifier,
     ensure_dir,
     get_device,
     load_checkpoint,
@@ -72,16 +73,24 @@ def run_prediction(args: argparse.Namespace) -> None:
     logger.info("Experiment directory: %s", experiment_dir)
     logger.info("Prediction directory: %s", predict_dir)
 
+    checkpoint_path = args.checkpoint
+    if checkpoint_path is None and args.weights == "none":
+        checkpoint_path = experiment_dir / "train" / "best.pth"
+    checkpoint = None
+    aux_loss = None
+    if checkpoint_path is not None:
+        checkpoint = load_checkpoint(checkpoint_path, map_location="cpu")
+        aux_loss = checkpoint_uses_aux_classifier(checkpoint)
+        logger.info("Checkpoint uses aux classifier: %s", aux_loss)
+
     model = build_deeplabv3_resnet50(
         num_classes=args.num_classes,
         weights=args.weights,
         backbone_weights=args.backbone_weights,
+        aux_loss=aux_loss,
     ).to(device)
-    checkpoint_path = args.checkpoint
-    if checkpoint_path is None and args.weights == "none":
-        checkpoint_path = experiment_dir / "train" / "best.pth"
+
     if checkpoint_path is not None:
-        checkpoint = load_checkpoint(checkpoint_path, map_location="cpu")
         state_dict = checkpoint["model"] if "model" in checkpoint else checkpoint
         model.load_state_dict(state_dict)
         logger.info("Loaded checkpoint: %s", checkpoint_path)

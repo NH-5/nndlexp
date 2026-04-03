@@ -30,6 +30,7 @@ def build_deeplabv3_resnet50(
     num_classes: int = 21,
     weights: str = "none",
     backbone_weights: str = "imagenet",
+    aux_loss: Optional[bool] = None,
 ) -> nn.Module:
     segmentation_weights = _resolve_segmentation_weights(weights)
 
@@ -40,6 +41,7 @@ def build_deeplabv3_resnet50(
         weights=segmentation_weights,
         weights_backbone=None if segmentation_weights is not None else _resolve_backbone_weights(backbone_weights),
         num_classes=num_classes,
+        aux_loss=aux_loss,
     )
     return model
 

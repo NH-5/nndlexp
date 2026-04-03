@@ -16,6 +16,7 @@ from exp2.pytorch_segmentation.model import build_deeplabv3_resnet50, freeze_bat
 from exp2.pytorch_segmentation.transforms import EvalTransform, RandomScaleCropFlip
 from exp2.pytorch_segmentation.utils import (
     build_run_stamp,
+    checkpoint_uses_aux_classifier,
     create_experiment_dir,
     ensure_dir,
     get_device,
@@ -107,10 +108,18 @@ def run_training(args: argparse.Namespace) -> None:
     logger.info("Train batches per epoch: %d", len(train_loader))
     logger.info("Validation batches per epoch: %d", len(val_loader))
 
+    resume_checkpoint = None
+    aux_loss = None
+    if args.resume is not None:
+        resume_checkpoint = load_checkpoint(args.resume, map_location="cpu")
+        aux_loss = checkpoint_uses_aux_classifier(resume_checkpoint)
+        logger.info("Resume checkpoint uses aux classifier: %s", aux_loss)
+
     model = build_deeplabv3_resnet50(
         num_classes=args.num_classes,
         weights=args.weights,
         backbone_weights=args.backbone_weights,
+        aux_loss=aux_loss,
     ).to(device)
     if args.freeze_bn:
         freeze_batch_norm(model)
@@ -154,13 +163,12 @@ def run_training(args: argparse.Namespace) -> None:
         experiment_dir / "experiment_info.json",
     )
 
-    if args.resume is not None:
-        checkpoint = load_checkpoint(args.resume, map_location="cpu")
-        model.load_state_dict(checkpoint["model"])
-        optimizer.load_state_dict(checkpoint["optimizer"])
-        scheduler.load_state_dict(checkpoint["scheduler"])
-        start_epoch = checkpoint["epoch"] + 1
-        best_miou = checkpoint.get("best_miou", best_miou)
+    if resume_checkpoint is not None:
+        model.load_state_dict(resume_checkpoint["model"])
+        optimizer.load_state_dict(resume_checkpoint["optimizer"])
+        scheduler.load_state_dict(resume_checkpoint["scheduler"])
+        start_epoch = resume_checkpoint["epoch"] + 1
+        best_miou = resume_checkpoint.get("best_miou", best_miou)
         logger.info("Resumed from checkpoint: %s", args.resume)
 
     for epoch in range(start_epoch, args.epochs + 1):
