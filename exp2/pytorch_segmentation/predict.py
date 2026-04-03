@@ -15,6 +15,7 @@ from exp2.pytorch_segmentation.utils import (
     build_run_stamp,
     ensure_dir,
     get_device,
+    load_checkpoint,
     save_json,
     setup_logger,
 )
@@ -72,7 +73,7 @@ def run_prediction(args: argparse.Namespace) -> None:
         backbone_weights=args.backbone_weights,
     ).to(device)
     if args.checkpoint is not None:
-        checkpoint = torch.load(args.checkpoint, map_location="cpu")
+        checkpoint = load_checkpoint(args.checkpoint, map_location="cpu")
         state_dict = checkpoint["model"] if "model" in checkpoint else checkpoint
         model.load_state_dict(state_dict)
         logger.info("Loaded checkpoint: %s", args.checkpoint)

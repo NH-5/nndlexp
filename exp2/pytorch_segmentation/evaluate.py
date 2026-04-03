@@ -11,7 +11,14 @@ from exp2.pytorch_segmentation.dataset import VOCSegmentationDataset
 from exp2.pytorch_segmentation.engine import evaluate
 from exp2.pytorch_segmentation.model import build_deeplabv3_resnet50
 from exp2.pytorch_segmentation.transforms import EvalTransform
-from exp2.pytorch_segmentation.utils import build_run_stamp, get_device, save_json, setup_logger
+from exp2.pytorch_segmentation.utils import (
+    build_run_stamp,
+    ensure_dir,
+    get_device,
+    load_checkpoint,
+    save_json,
+    setup_logger,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -33,8 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def run_evaluation(args: argparse.Namespace) -> dict[str, float | list[float]]:
     device = get_device(args.device)
-    output_dir = args.output_dir
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = ensure_dir(args.output_dir)
     run_stamp = build_run_stamp()
     logger = setup_logger("segmentation.evaluate", output_dir / "logs" / f"evaluate_{run_stamp}.log")
     logger.info("Evaluation started")
@@ -63,7 +69,7 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, float | list[float]]:
     ).to(device)
 
     if args.checkpoint is not None:
-        checkpoint = torch.load(args.checkpoint, map_location="cpu")
+        checkpoint = load_checkpoint(args.checkpoint, map_location="cpu")
         state_dict = checkpoint["model"] if "model" in checkpoint else checkpoint
         model.load_state_dict(state_dict)
         logger.info("Loaded checkpoint: %s", args.checkpoint)

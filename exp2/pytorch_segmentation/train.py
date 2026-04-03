@@ -18,6 +18,7 @@ from exp2.pytorch_segmentation.utils import (
     build_run_stamp,
     ensure_dir,
     get_device,
+    load_checkpoint,
     save_checkpoint,
     save_json,
     seed_everything,
@@ -135,7 +136,7 @@ def run_training(args: argparse.Namespace) -> None:
     )
 
     if args.resume is not None:
-        checkpoint = torch.load(args.resume, map_location="cpu")
+        checkpoint = load_checkpoint(args.resume, map_location="cpu")
         model.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
         scheduler.load_state_dict(checkpoint["scheduler"])
