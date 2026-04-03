@@ -14,7 +14,15 @@ from exp2.pytorch_segmentation.dataset import VOCSegmentationDataset
 from exp2.pytorch_segmentation.engine import evaluate, train_one_epoch
 from exp2.pytorch_segmentation.model import build_deeplabv3_resnet50, freeze_batch_norm
 from exp2.pytorch_segmentation.transforms import EvalTransform, RandomScaleCropFlip
-from exp2.pytorch_segmentation.utils import ensure_dir, get_device, save_checkpoint, seed_everything
+from exp2.pytorch_segmentation.utils import (
+    build_run_stamp,
+    ensure_dir,
+    get_device,
+    save_checkpoint,
+    save_json,
+    seed_everything,
+    setup_logger,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -43,6 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", default="auto")
     parser.add_argument("--eval-every", type=int, default=1)
     parser.add_argument("--eval-long-size", type=int, default=None)
+    parser.add_argument("--log-interval", type=int, default=20)
     return parser
 
 
@@ -50,6 +59,11 @@ def run_training(args: argparse.Namespace) -> None:
     seed_everything(args.seed)
     device = get_device(args.device)
     output_dir = ensure_dir(args.output_dir)
+    run_stamp = build_run_stamp()
+    logger = setup_logger("segmentation.train", output_dir / "logs" / f"train_{run_stamp}.log")
+    logger.info("Training started")
+    logger.info("Run stamp: %s", run_stamp)
+    logger.info("Arguments: %s", vars(args))
 
     train_dataset = VOCSegmentationDataset(
         data_root=args.data_root,
@@ -66,6 +80,8 @@ def run_training(args: argparse.Namespace) -> None:
         split=args.val_split,
         transform=EvalTransform(long_size=args.eval_long_size),
     )
+    logger.info("Training samples: %d", len(train_dataset))
+    logger.info("Validation samples: %d", len(val_dataset))
 
     train_loader = DataLoader(
         train_dataset,
@@ -81,6 +97,9 @@ def run_training(args: argparse.Namespace) -> None:
         num_workers=args.num_workers,
         pin_memory=device.type == "cuda",
     )
+    logger.info("Device: %s", device)
+    logger.info("Train batches per epoch: %d", len(train_loader))
+    logger.info("Validation batches per epoch: %d", len(val_loader))
 
     model = build_deeplabv3_resnet50(
         num_classes=args.num_classes,
@@ -89,6 +108,7 @@ def run_training(args: argparse.Namespace) -> None:
     ).to(device)
     if args.freeze_bn:
         freeze_batch_norm(model)
+        logger.info("BatchNorm layers are frozen")
 
     criterion = nn.CrossEntropyLoss(ignore_index=args.ignore_label)
     optimizer = SGD(
@@ -107,6 +127,12 @@ def run_training(args: argparse.Namespace) -> None:
 
     start_epoch = 1
     best_miou = -1.0
+    history: list[dict] = []
+
+    save_json(
+        {"run_stamp": run_stamp, "args": vars(args), "device": str(device)},
+        output_dir / "logs" / f"train_config_{run_stamp}.json",
+    )
 
     if args.resume is not None:
         checkpoint = torch.load(args.resume, map_location="cpu")
@@ -115,7 +141,7 @@ def run_training(args: argparse.Namespace) -> None:
         scheduler.load_state_dict(checkpoint["scheduler"])
         start_epoch = checkpoint["epoch"] + 1
         best_miou = checkpoint.get("best_miou", best_miou)
-        print(f"Resumed from checkpoint: {args.resume}")
+        logger.info("Resumed from checkpoint: %s", args.resume)
 
     for epoch in range(start_epoch, args.epochs + 1):
         train_stats = train_one_epoch(
@@ -127,10 +153,21 @@ def run_training(args: argparse.Namespace) -> None:
             epoch=epoch,
             scheduler=scheduler,
             scaler=scaler,
+            log_interval=args.log_interval,
+            logger=logger,
         )
-        print(f"Epoch {epoch:02d} training loss: {train_stats['loss']:.4f}")
+        logger.info("Epoch %02d training loss: %.4f", epoch, train_stats["loss"])
 
         if epoch % args.eval_every != 0:
+            history.append(
+                {
+                    "epoch": epoch,
+                    "train_loss": train_stats["loss"],
+                    "evaluated": False,
+                    "best_miou": best_miou,
+                }
+            )
+            save_json(history, output_dir / "logs" / f"train_history_{run_stamp}.json")
             continue
 
         val_stats = evaluate(
@@ -140,10 +177,12 @@ def run_training(args: argparse.Namespace) -> None:
             num_classes=args.num_classes,
             ignore_index=args.ignore_label,
         )
-        print(
-            f"Epoch {epoch:02d} validation | loss={val_stats['loss']:.4f} "
-            f"| pixel_acc={val_stats['pixel_accuracy']:.4f} "
-            f"| mIoU={val_stats['mean_iou']:.4f}"
+        logger.info(
+            "Epoch %02d validation | loss=%.4f | pixel_acc=%.4f | mIoU=%.4f",
+            epoch,
+            val_stats["loss"],
+            val_stats["pixel_accuracy"],
+            val_stats["mean_iou"],
         )
 
         checkpoint = {
@@ -155,12 +194,37 @@ def run_training(args: argparse.Namespace) -> None:
             "args": vars(args),
         }
         save_checkpoint(checkpoint, output_dir / "last.pth")
+        logger.info("Saved latest checkpoint: %s", output_dir / "last.pth")
 
         if val_stats["mean_iou"] > best_miou:
             best_miou = float(val_stats["mean_iou"])
             checkpoint["best_miou"] = best_miou
             save_checkpoint(checkpoint, output_dir / "best.pth")
-            print(f"Saved best checkpoint to {output_dir / 'best.pth'}")
+            logger.info("Saved best checkpoint: %s", output_dir / "best.pth")
+
+        history.append(
+            {
+                "epoch": epoch,
+                "train_loss": train_stats["loss"],
+                "evaluated": True,
+                "val_loss": val_stats["loss"],
+                "pixel_accuracy": val_stats["pixel_accuracy"],
+                "mean_iou": val_stats["mean_iou"],
+                "best_miou": best_miou,
+            }
+        )
+        save_json(history, output_dir / "logs" / f"train_history_{run_stamp}.json")
+
+    save_json(
+        {
+            "run_stamp": run_stamp,
+            "best_miou": best_miou,
+            "epochs_completed": args.epochs,
+            "history_file": str(output_dir / "logs" / f"train_history_{run_stamp}.json"),
+        },
+        output_dir / "logs" / f"train_summary_{run_stamp}.json",
+    )
+    logger.info("Training finished. Best mIoU: %.4f", best_miou)
 
 
 def main() -> None:

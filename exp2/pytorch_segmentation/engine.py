@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 import torch
@@ -20,10 +21,12 @@ def train_one_epoch(
     scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None,
     scaler: Optional[torch.cuda.amp.GradScaler] = None,
     log_interval: int = 20,
+    logger: Optional[logging.Logger] = None,
 ) -> dict[str, float]:
     model.train()
     loss_meter = AverageMeter()
     amp_enabled = scaler is not None and device.type == "cuda"
+    logger = logger or logging.getLogger(__name__)
 
     for step, (images, masks, _) in enumerate(loader, start=1):
         images = images.to(device, non_blocking=device.type == "cuda")
@@ -50,7 +53,7 @@ def train_one_epoch(
 
         if step % log_interval == 0 or step == len(loader):
             lr = optimizer.param_groups[0]["lr"]
-            print(
+            logger.info(
                 f"Epoch {epoch:02d} | Step {step:04d}/{len(loader):04d} "
                 f"| lr={lr:.6f} | loss={loss_meter.average:.4f}"
             )

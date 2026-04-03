@@ -22,6 +22,7 @@ CONFIG = {
     "num_workers": 2,
     "device": "auto",
     "long_size": None,
+    "output_dir": PROJECT_ROOT / "exp2" / "outputs" / "evaluation",
 }
 
 

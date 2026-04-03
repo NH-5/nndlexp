@@ -11,7 +11,13 @@ from torch.nn import functional as F
 from exp2.pytorch_segmentation.config import ExperimentConfig, VOC_COLORMAP
 from exp2.pytorch_segmentation.model import build_deeplabv3_resnet50
 from exp2.pytorch_segmentation.transforms import PredictTransform
-from exp2.pytorch_segmentation.utils import ensure_dir, get_device
+from exp2.pytorch_segmentation.utils import (
+    build_run_stamp,
+    ensure_dir,
+    get_device,
+    save_json,
+    setup_logger,
+)
 
 
 def colorize_mask(mask: np.ndarray) -> Image.Image:
@@ -54,6 +60,11 @@ def iter_input_images(path: Path) -> list[Path]:
 def run_prediction(args: argparse.Namespace) -> None:
     device = get_device(args.device)
     output_dir = ensure_dir(args.output_dir)
+    run_stamp = build_run_stamp()
+    logger = setup_logger("segmentation.predict", output_dir / "logs" / f"predict_{run_stamp}.log")
+    logger.info("Prediction started")
+    logger.info("Run stamp: %s", run_stamp)
+    logger.info("Arguments: %s", vars(args))
 
     model = build_deeplabv3_resnet50(
         num_classes=args.num_classes,
@@ -64,10 +75,11 @@ def run_prediction(args: argparse.Namespace) -> None:
         checkpoint = torch.load(args.checkpoint, map_location="cpu")
         state_dict = checkpoint["model"] if "model" in checkpoint else checkpoint
         model.load_state_dict(state_dict)
-        print(f"Loaded checkpoint: {args.checkpoint}")
+        logger.info("Loaded checkpoint: %s", args.checkpoint)
     model.eval()
 
     transform = PredictTransform(long_size=args.long_size)
+    prediction_records = []
     for image_path in iter_input_images(args.input):
         image = Image.open(image_path).convert("RGB")
         image_tensor, original_size = transform(image)
@@ -85,9 +97,33 @@ def run_prediction(args: argparse.Namespace) -> None:
 
         mask = colorize_mask(prediction)
         overlay = blend_overlay(image, prediction)
-        mask.save(output_dir / f"{image_path.stem}_mask.png")
-        overlay.save(output_dir / f"{image_path.stem}_overlay.png")
-        print(f"Saved outputs for {image_path.name}")
+        mask_path = output_dir / f"{image_path.stem}_mask.png"
+        overlay_path = output_dir / f"{image_path.stem}_overlay.png"
+        mask.save(mask_path)
+        overlay.save(overlay_path)
+        prediction_records.append(
+            {
+                "input_image": image_path,
+                "mask_path": mask_path,
+                "overlay_path": overlay_path,
+                "original_size": {"width": original_size[0], "height": original_size[1]},
+            }
+        )
+        logger.info("Saved prediction outputs for %s", image_path.name)
+
+    manifest_path = output_dir / f"prediction_manifest_{run_stamp}.json"
+    save_json(
+        {
+            "run_stamp": run_stamp,
+            "checkpoint": args.checkpoint,
+            "weights": args.weights,
+            "backbone_weights": args.backbone_weights,
+            "device": str(device),
+            "items": prediction_records,
+        },
+        manifest_path,
+    )
+    logger.info("Saved prediction manifest: %s", manifest_path)
 
 
 def main() -> None:

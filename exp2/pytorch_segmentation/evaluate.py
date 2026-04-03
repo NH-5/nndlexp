@@ -11,7 +11,7 @@ from exp2.pytorch_segmentation.dataset import VOCSegmentationDataset
 from exp2.pytorch_segmentation.engine import evaluate
 from exp2.pytorch_segmentation.model import build_deeplabv3_resnet50
 from exp2.pytorch_segmentation.transforms import EvalTransform
-from exp2.pytorch_segmentation.utils import get_device
+from exp2.pytorch_segmentation.utils import build_run_stamp, get_device, save_json, setup_logger
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -27,11 +27,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-workers", type=int, default=config.num_workers)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--long-size", type=int, default=None)
+    parser.add_argument("--output-dir", type=Path, default=config.outputs_dir / "evaluation")
     return parser
 
 
 def run_evaluation(args: argparse.Namespace) -> dict[str, float | list[float]]:
     device = get_device(args.device)
+    output_dir = args.output_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+    run_stamp = build_run_stamp()
+    logger = setup_logger("segmentation.evaluate", output_dir / "logs" / f"evaluate_{run_stamp}.log")
+    logger.info("Evaluation started")
+    logger.info("Run stamp: %s", run_stamp)
+    logger.info("Arguments: %s", vars(args))
 
     dataset = VOCSegmentationDataset(
         data_root=args.data_root,
@@ -45,6 +53,8 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, float | list[float]]:
         num_workers=args.num_workers,
         pin_memory=device.type == "cuda",
     )
+    logger.info("Evaluation samples: %d", len(dataset))
+    logger.info("Device: %s", device)
 
     model = build_deeplabv3_resnet50(
         num_classes=args.num_classes,
@@ -56,7 +66,7 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, float | list[float]]:
         checkpoint = torch.load(args.checkpoint, map_location="cpu")
         state_dict = checkpoint["model"] if "model" in checkpoint else checkpoint
         model.load_state_dict(state_dict)
-        print(f"Loaded checkpoint: {args.checkpoint}")
+        logger.info("Loaded checkpoint: %s", args.checkpoint)
 
     metrics = evaluate(
         model=model,
@@ -65,6 +75,22 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, float | list[float]]:
         num_classes=args.num_classes,
         ignore_index=args.ignore_label,
     )
+    metrics_payload = {
+        "run_stamp": run_stamp,
+        "checkpoint": args.checkpoint,
+        "weights": args.weights,
+        "backbone_weights": args.backbone_weights,
+        "split": args.split,
+        "device": str(device),
+        "metrics": metrics,
+    }
+    save_json(metrics_payload, output_dir / f"evaluation_metrics_{run_stamp}.json")
+    logger.info("loss: %.4f", metrics["loss"])
+    logger.info("pixel_accuracy: %.4f", metrics["pixel_accuracy"])
+    logger.info("mean_iou: %.4f", metrics["mean_iou"])
+    for class_name, class_iou in zip(VOC_CLASSES, metrics["per_class_iou"]):
+        logger.info("class=%s iou=%.4f", class_name, class_iou)
+    logger.info("Saved evaluation metrics: %s", output_dir / f"evaluation_metrics_{run_stamp}.json")
     return metrics
 
 

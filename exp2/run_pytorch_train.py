@@ -35,6 +35,7 @@ CONFIG = {
     "device": "auto",
     "eval_every": 1,
     "eval_long_size": None,
+    "log_interval": 20,
 }
 
 
