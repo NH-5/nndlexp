@@ -3,11 +3,17 @@ from __future__ import annotations
 from typing import Optional
 
 from torch import nn
-from torchvision.models import ResNet50_Weights
-from torchvision.models.segmentation import (
-    DeepLabV3_ResNet50_Weights,
-    deeplabv3_resnet50,
-)
+from torchvision.models.segmentation import deeplabv3_resnet50
+
+try:
+    from torchvision.models import ResNet50_Weights
+    from torchvision.models.segmentation import DeepLabV3_ResNet50_Weights
+
+    HAS_TORCHVISION_WEIGHTS_API = True
+except ImportError:
+    ResNet50_Weights = None
+    DeepLabV3_ResNet50_Weights = None
+    HAS_TORCHVISION_WEIGHTS_API = False
 
 
 def _resolve_segmentation_weights(name: str):
@@ -32,17 +38,27 @@ def build_deeplabv3_resnet50(
     backbone_weights: str = "imagenet",
     aux_loss: Optional[bool] = None,
 ) -> nn.Module:
-    segmentation_weights = _resolve_segmentation_weights(weights)
-
-    if segmentation_weights is not None and num_classes != 21:
+    if weights == "voc" and num_classes != 21:
         raise ValueError("VOC pretrained segmentation weights only support num_classes=21.")
 
-    model = deeplabv3_resnet50(
-        weights=segmentation_weights,
-        weights_backbone=None if segmentation_weights is not None else _resolve_backbone_weights(backbone_weights),
-        num_classes=num_classes,
-        aux_loss=aux_loss,
-    )
+    if HAS_TORCHVISION_WEIGHTS_API:
+        segmentation_weights = _resolve_segmentation_weights(weights)
+        model = deeplabv3_resnet50(
+            weights=segmentation_weights,
+            weights_backbone=None if segmentation_weights is not None else _resolve_backbone_weights(backbone_weights),
+            num_classes=num_classes,
+            aux_loss=aux_loss,
+        )
+    else:
+        pretrained = weights == "voc"
+        pretrained_backbone = (not pretrained) and backbone_weights == "imagenet"
+        model = deeplabv3_resnet50(
+            pretrained=pretrained,
+            progress=True,
+            num_classes=num_classes,
+            aux_loss=aux_loss,
+            pretrained_backbone=pretrained_backbone,
+        )
     return model
 
 
