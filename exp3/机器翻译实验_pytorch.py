@@ -25,7 +25,7 @@ RUN_CONFIG = {
     "learning_rate": 1e-3,
     "num_epochs": 15,
     "train_split": 0.99,
-    "print_every": 50,
+    "eval_log_samples": 5,
     "predict_sentence": "i am a student .",
 }
 
@@ -197,12 +197,18 @@ def create_dataloader(args, is_training: bool):
 
     encoder_input = encoder_data[:, :-1]
     decoder_input = decoder_data[:, :-1]
-    dataset = TensorDataset(torch.from_numpy(encoder_input), torch.from_numpy(decoder_input))
+    decoder_target = decoder_data[:, 1:]
+    dataset = TensorDataset(
+        torch.from_numpy(encoder_input),
+        torch.from_numpy(decoder_input),
+        torch.from_numpy(decoder_target),
+    )
 
     def collate_fn(batch):
         return {
             "encoder_data": torch.stack([item[0] for item in batch]),
             "decoder_data": torch.stack([item[1] for item in batch]),
+            "target_data": torch.stack([item[2] for item in batch]),
         }
 
     return DataLoader(
@@ -317,6 +323,66 @@ def ids_to_chinese(ids, vocab):
     return "".join(chars)
 
 
+@torch.no_grad()
+def compute_eval_loss(model, data_loader, criterion, device):
+    model.eval()
+    total_loss = 0.0
+    total_batches = 0
+    for batch in data_loader:
+        src = batch["encoder_data"].to(device)
+        tgt = batch["decoder_data"].to(device)
+        label = batch.get("target_data")
+        if label is None:
+            continue
+        label = label.to(device)
+        logits = model(src, tgt)
+        loss = criterion(logits.reshape(-1, logits.size(-1)), label.reshape(-1))
+        total_loss += loss.item()
+        total_batches += 1
+    if total_batches == 0:
+        return 0.0
+    return total_loss / total_batches
+
+
+@torch.no_grad()
+def compute_eval_metrics(model, data_loader, criterion, device):
+    model.eval()
+    total_loss = 0.0
+    total_batches = 0
+    token_correct = 0
+    token_total = 0
+    seq_correct = 0
+    seq_total = 0
+
+    for batch in data_loader:
+        src = batch["encoder_data"].to(device)
+        tgt = batch["decoder_data"].to(device)
+        label = batch["target_data"].to(device)
+
+        logits = model(src, tgt)
+        loss = criterion(logits.reshape(-1, logits.size(-1)), label.reshape(-1))
+        total_loss += loss.item()
+        total_batches += 1
+
+        pred = model.greedy_decode(src, label.size(1))
+        aligned_pred = torch.full_like(label, PAD_ID)
+        copy_len = min(pred.size(1), label.size(1))
+        aligned_pred[:, :copy_len] = pred[:, :copy_len]
+
+        valid_mask = label.ne(PAD_ID)
+        token_correct += ((aligned_pred == label) & valid_mask).sum().item()
+        token_total += valid_mask.sum().item()
+
+        seq_match = ((aligned_pred == label) | ~valid_mask).all(dim=1)
+        seq_correct += seq_match.sum().item()
+        seq_total += label.size(0)
+
+    mean_loss = total_loss / total_batches if total_batches else 0.0
+    token_acc = token_correct / token_total if token_total else 0.0
+    seq_acc = seq_correct / seq_total if seq_total else 0.0
+    return mean_loss, token_acc, seq_acc
+
+
 def train(args):
     set_seed(args.seed)
     ensure_preprocessed(args)
@@ -324,6 +390,7 @@ def train(args):
     print(f"using device: {device}")
 
     train_loader = create_dataloader(args, is_training=True)
+    eval_loader = create_dataloader(args, is_training=False)
     model, en_vocab, ch_vocab = build_model(args)
     model = model.to(device)
 
@@ -344,10 +411,15 @@ def train(args):
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
-
-            if step % args.print_every == 0 or step == len(train_loader):
-                avg_loss = total_loss / step
-                print(f"epoch {epoch}/{args.num_epochs} step {step}/{len(train_loader)} loss {avg_loss:.6f}")
+        train_loss = total_loss / max(len(train_loader), 1)
+        eval_loss, token_acc, seq_acc = compute_eval_metrics(model, eval_loader, criterion, device)
+        print(
+            f"epoch {epoch}/{args.num_epochs} "
+            f"train_loss {train_loss:.6f} "
+            f"eval_loss {eval_loss:.6f} "
+            f"token_acc {token_acc:.4f} "
+            f"seq_acc {seq_acc:.4f}"
+        )
 
     save_checkpoint(model, args, en_vocab, ch_vocab)
 
@@ -364,10 +436,15 @@ def evaluate(args):
     checkpoint_path = args.checkpoint_dir / args.checkpoint_name
     load_checkpoint(model, checkpoint_path, device)
     model.eval()
+    criterion = nn.CrossEntropyLoss(ignore_index=PAD_ID)
+    eval_loss, token_acc, seq_acc = compute_eval_metrics(model, eval_loader, criterion, device)
+    print(f"eval loss: {eval_loss:.6f}")
+    print(f"token accuracy: {token_acc:.4f}")
+    print(f"sequence accuracy: {seq_acc:.4f}")
 
+    shown = 0
     for batch in eval_loader:
         src = batch["encoder_data"].to(device)
-        tgt = batch["decoder_data"].to(device)
         pred = model.greedy_decode(src, args.max_seq_length).cpu()
 
         english = ids_to_english(batch["encoder_data"][0].tolist(), en_vocab)
@@ -378,6 +455,9 @@ def evaluate(args):
         print("expect Chinese:", expect_chinese)
         print("predict Chinese:", predict_chinese)
         print()
+        shown += 1
+        if shown >= args.eval_log_samples:
+            break
 
 
 @torch.no_grad()
