@@ -30,7 +30,9 @@ RUN_CONFIG = {
 }
 
 PAD_ID = 0
-SOS_ID = 1
+EOS_ID = 1
+SOS_ID = 2
+PAD_TOKEN = "<pad>"
 EOS_TOKEN = "<eos>"
 SOS_TOKEN = "<sos>"
 
@@ -105,24 +107,25 @@ def preprocess_dataset(args):
             pairs.append((src, tgt))
 
     pairs = pairs[: args.num_samples]
+    random.Random(args.seed).shuffle(pairs)
     english_sentences = [pair[0] for pair in pairs]
     chinese_sentences = [pair[1] for pair in pairs]
 
     en_vocab = sorted({token for sentence in english_sentences for token in sentence.split() if token})
     ch_vocab = sorted(set("".join(chinese_sentences)))
-    id2en = [EOS_TOKEN, SOS_TOKEN] + en_vocab
-    id2ch = [EOS_TOKEN, SOS_TOKEN] + ch_vocab
+    id2en = [PAD_TOKEN, EOS_TOKEN, SOS_TOKEN] + en_vocab
+    id2ch = [PAD_TOKEN, EOS_TOKEN, SOS_TOKEN] + ch_vocab
     en2id = {token: idx for idx, token in enumerate(id2en)}
     ch2id = {token: idx for idx, token in enumerate(id2ch)}
 
     encoder_data = []
     for sentence in english_sentences:
-        ids = [SOS_ID] + [en2id[token] for token in sentence.split()] + [PAD_ID]
+        ids = [SOS_ID] + [en2id[token] for token in sentence.split()] + [EOS_ID]
         encoder_data.append(pad_or_truncate(ids, args.max_seq_length))
 
     decoder_data = []
     for sentence in chinese_sentences:
-        ids = [SOS_ID] + [ch2id[token] for token in sentence] + [PAD_ID]
+        ids = [SOS_ID] + [ch2id[token] for token in sentence] + [EOS_ID]
         decoder_data.append(pad_or_truncate(ids, args.max_seq_length))
 
     encoder_data = np.asarray(encoder_data, dtype=np.int64)
@@ -168,7 +171,7 @@ def create_dataloader(args, is_training: bool):
         decoder_data = data["decoder_data"]
 
     if is_training:
-        encoder_input = encoder_data[:, 1:]
+        encoder_input = encoder_data[:, :-1]
         decoder_input = decoder_data[:, :-1]
         decoder_target = decoder_data[:, 1:]
         dataset = TensorDataset(
@@ -192,7 +195,7 @@ def create_dataloader(args, is_training: bool):
             collate_fn=collate_fn,
         )
 
-    encoder_input = encoder_data[:, 1:]
+    encoder_input = encoder_data[:, :-1]
     decoder_input = decoder_data[:, :-1]
     dataset = TensorDataset(torch.from_numpy(encoder_input), torch.from_numpy(decoder_input))
 
@@ -238,12 +241,16 @@ class Seq2SeqGRU(nn.Module):
         hidden = self.encode(src)
         decoder_input = torch.full((src.size(0), 1), SOS_ID, dtype=torch.long, device=src.device)
         outputs = []
+        finished = torch.zeros(src.size(0), dtype=torch.bool, device=src.device)
         for _ in range(max_len):
             embedded = self.decoder_embedding(decoder_input)
             output, hidden = self.decoder_gru(embedded, hidden)
             logits = self.output_layer(output[:, -1:, :])
             next_token = logits.argmax(dim=-1)
             outputs.append(next_token)
+            finished |= next_token.squeeze(1).eq(EOS_ID)
+            if torch.all(finished):
+                break
             decoder_input = next_token
         return torch.cat(outputs, dim=1)
 
@@ -291,7 +298,7 @@ def load_checkpoint(model, checkpoint_path, device):
 def ids_to_english(ids, vocab):
     tokens = []
     for idx in ids:
-        if idx == PAD_ID:
+        if idx == PAD_ID or idx == EOS_ID:
             break
         if idx == SOS_ID:
             continue
@@ -302,7 +309,7 @@ def ids_to_english(ids, vocab):
 def ids_to_chinese(ids, vocab):
     chars = []
     for idx in ids:
-        if idx == PAD_ID:
+        if idx == PAD_ID or idx == EOS_ID:
             break
         if idx == SOS_ID:
             continue
