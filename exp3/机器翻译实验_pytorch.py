@@ -14,7 +14,7 @@ RUN_CONFIG = {
     "data_file": "./exp3/ReferenceCode/src/cmn_zhsim.txt",
     "preprocess_dir": "./exp3/preprocess_pytorch",
     "checkpoint_dir": "./exp3/checkpoints_pytorch",
-    "checkpoint_name": "seq2seq_gru.pt",
+    "checkpoint_name": "seq2seq_attention_gru.pt",
     "device": "auto",  # auto / cuda / mps / cpu
     "seed": 42,
     "num_samples": 2000,
@@ -220,7 +220,25 @@ def create_dataloader(args, is_training: bool):
     )
 
 
-class Seq2SeqGRU(nn.Module):
+class AdditiveAttention(nn.Module):
+    def __init__(self, hidden_size):
+        super().__init__()
+        self.encoder_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.decoder_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.score_proj = nn.Linear(hidden_size, 1, bias=False)
+
+    def forward(self, decoder_hidden, encoder_outputs, src_mask):
+        query = decoder_hidden[-1]
+        scores = self.score_proj(
+            torch.tanh(self.encoder_proj(encoder_outputs) + self.decoder_proj(query).unsqueeze(1))
+        ).squeeze(-1)
+        scores = scores.masked_fill(~src_mask, -1e9)
+        attn_weights = torch.softmax(scores, dim=1)
+        context = torch.bmm(attn_weights.unsqueeze(1), encoder_outputs)
+        return context, attn_weights
+
+
+class Seq2SeqAttentionGRU(nn.Module):
     def __init__(self, en_vocab_size, ch_vocab_size, hidden_size, max_seq_length):
         super().__init__()
         self.hidden_size = hidden_size
@@ -228,30 +246,40 @@ class Seq2SeqGRU(nn.Module):
         self.encoder_embedding = nn.Embedding(en_vocab_size, hidden_size)
         self.decoder_embedding = nn.Embedding(ch_vocab_size, hidden_size)
         self.encoder_gru = nn.GRU(hidden_size, hidden_size, batch_first=True)
-        self.decoder_gru = nn.GRU(hidden_size, hidden_size, batch_first=True)
-        self.output_layer = nn.Linear(hidden_size, ch_vocab_size)
+        self.attention = AdditiveAttention(hidden_size)
+        self.decoder_gru = nn.GRU(hidden_size * 2, hidden_size, batch_first=True)
+        self.output_layer = nn.Linear(hidden_size * 2, ch_vocab_size)
 
     def encode(self, src):
         embedded = self.encoder_embedding(src)
-        _, hidden = self.encoder_gru(embedded)
-        return hidden
+        encoder_outputs, hidden = self.encoder_gru(embedded)
+        src_mask = src.ne(PAD_ID)
+        return encoder_outputs, hidden, src_mask
+
+    def decode_step(self, decoder_input, hidden, encoder_outputs, src_mask):
+        embedded = self.decoder_embedding(decoder_input)
+        context, attn_weights = self.attention(hidden, encoder_outputs, src_mask)
+        decoder_rnn_input = torch.cat([embedded, context], dim=-1)
+        decoder_output, hidden = self.decoder_gru(decoder_rnn_input, hidden)
+        logits = self.output_layer(torch.cat([decoder_output, context], dim=-1))
+        return logits, hidden, attn_weights
 
     def forward(self, src, tgt):
-        hidden = self.encode(src)
-        embedded = self.decoder_embedding(tgt)
-        output, _ = self.decoder_gru(embedded, hidden)
-        logits = self.output_layer(output)
-        return logits
+        encoder_outputs, hidden, src_mask = self.encode(src)
+        logits_steps = []
+        for step in range(tgt.size(1)):
+            decoder_input = tgt[:, step : step + 1]
+            logits, hidden, _ = self.decode_step(decoder_input, hidden, encoder_outputs, src_mask)
+            logits_steps.append(logits)
+        return torch.cat(logits_steps, dim=1)
 
     def greedy_decode(self, src, max_len):
-        hidden = self.encode(src)
+        encoder_outputs, hidden, src_mask = self.encode(src)
         decoder_input = torch.full((src.size(0), 1), SOS_ID, dtype=torch.long, device=src.device)
         outputs = []
         finished = torch.zeros(src.size(0), dtype=torch.bool, device=src.device)
         for _ in range(max_len):
-            embedded = self.decoder_embedding(decoder_input)
-            output, hidden = self.decoder_gru(embedded, hidden)
-            logits = self.output_layer(output[:, -1:, :])
+            logits, hidden, _ = self.decode_step(decoder_input, hidden, encoder_outputs, src_mask)
             next_token = logits.argmax(dim=-1)
             outputs.append(next_token)
             finished |= next_token.squeeze(1).eq(EOS_ID)
@@ -269,7 +297,7 @@ def load_meta(args):
 
 def build_model(args):
     en_vocab, ch_vocab = load_meta(args)
-    model = Seq2SeqGRU(
+    model = Seq2SeqAttentionGRU(
         en_vocab_size=len(en_vocab),
         ch_vocab_size=len(ch_vocab),
         hidden_size=args.hidden_size,
