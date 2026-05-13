@@ -23,7 +23,7 @@ from exp4.utils.plot import plot_accuracy_curve, plot_loss_curve, plot_model_com
 RUN_CONFIG = {
     "seed": 42,
     "device": "auto",
-    "data_root": PROJECT_ROOT / "data",
+    "data_root": PROJECT_ROOT / "exp4" / "data",
     "output_root": PROJECT_ROOT / "exp4" / "outputs",
     "image_size": 224,
     "val_fraction": 0.1,
