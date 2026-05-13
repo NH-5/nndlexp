@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-import socket
-from contextlib import contextmanager
+import hashlib
 import random
+import tarfile
+import time
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,6 +28,9 @@ CIFAR10_CLASSES = (
 
 CIFAR10_MEAN = (0.4914, 0.4822, 0.4465)
 CIFAR10_STD = (0.2470, 0.2435, 0.2616)
+CIFAR10_URL = "https://www.cs.toronto.edu/~kriz/cifar-10-python.tar.gz"
+CIFAR10_ARCHIVE = "cifar-10-python.tar.gz"
+CIFAR10_ARCHIVE_MD5 = "c58f30108f718f92721af3b95e74349a"
 CIFAR10_FOLDER = "cifar-10-batches-py"
 CIFAR10_REQUIRED_FILES = (
     "data_batch_1",
@@ -85,18 +90,132 @@ def _has_cifar10_files(data_root: Path) -> bool:
     return all((data_dir / file_name).exists() for file_name in CIFAR10_REQUIRED_FILES)
 
 
-@contextmanager
-def _temporary_socket_timeout(timeout_seconds: int | None):
-    if timeout_seconds is None:
-        yield
+def _format_size(num_bytes: int) -> str:
+    size = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024.0:
+            return f"{size:.1f} {unit}"
+        size /= 1024.0
+    return f"{size:.1f} TB"
+
+
+def _file_md5(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    digest = hashlib.md5()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(chunk_size), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _download_cifar10_archive(data_root: Path, timeout_seconds: int | None) -> Path:
+    data_root.mkdir(parents=True, exist_ok=True)
+    archive_path = data_root / CIFAR10_ARCHIVE
+    partial_path = archive_path.with_suffix(archive_path.suffix + ".part")
+
+    if archive_path.exists():
+        if _file_md5(archive_path) == CIFAR10_ARCHIVE_MD5:
+            print(f"Found CIFAR-10 archive: {archive_path}", flush=True)
+            return archive_path
+        print(f"Existing CIFAR-10 archive has wrong MD5 and will be replaced: {archive_path}", flush=True)
+        archive_path.unlink()
+
+    if partial_path.exists():
+        partial_path.unlink()
+
+    print(f"Downloading CIFAR-10 from {CIFAR10_URL}", flush=True)
+    request = urllib.request.Request(CIFAR10_URL, headers={"User-Agent": "Mozilla/5.0"})
+    start_time = time.monotonic()
+    last_report = start_time
+    downloaded = 0
+    total_bytes = None
+
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            content_length = response.headers.get("Content-Length")
+            if content_length and content_length.isdigit():
+                total_bytes = int(content_length)
+
+            with partial_path.open("wb") as file:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+
+                    file.write(chunk)
+                    downloaded += len(chunk)
+                    now = time.monotonic()
+                    should_report = now - last_report >= 2.0
+                    if total_bytes is not None and downloaded >= total_bytes:
+                        should_report = True
+
+                    if should_report:
+                        elapsed = max(now - start_time, 1e-6)
+                        speed = downloaded / elapsed
+                        if total_bytes is None:
+                            print(
+                                f"Downloading CIFAR-10: {_format_size(downloaded)} "
+                                f"at {_format_size(int(speed))}/s",
+                                flush=True,
+                            )
+                        else:
+                            percent = downloaded / total_bytes * 100
+                            print(
+                                f"Downloading CIFAR-10: {_format_size(downloaded)} / "
+                                f"{_format_size(total_bytes)} ({percent:.1f}%) "
+                                f"at {_format_size(int(speed))}/s",
+                                flush=True,
+                            )
+                        last_report = now
+    except Exception:
+        if partial_path.exists():
+            partial_path.unlink()
+        raise
+
+    partial_path.replace(archive_path)
+    if _file_md5(archive_path) != CIFAR10_ARCHIVE_MD5:
+        archive_path.unlink()
+        raise RuntimeError("Downloaded CIFAR-10 archive failed MD5 verification.")
+
+    print(f"CIFAR-10 archive downloaded: {archive_path}", flush=True)
+    return archive_path
+
+
+def _extract_cifar10_archive(archive_path: Path, data_root: Path) -> None:
+    print(f"Extracting CIFAR-10 archive to {data_root}", flush=True)
+    data_root_resolved = data_root.resolve()
+
+    with tarfile.open(archive_path, "r:gz") as archive:
+        for member in archive.getmembers():
+            target_path = (data_root / member.name).resolve()
+            try:
+                target_path.relative_to(data_root_resolved)
+            except ValueError as exc:
+                raise RuntimeError(f"Unsafe path in CIFAR-10 archive: {member.name}") from exc
+        archive.extractall(data_root)
+
+    if not _has_cifar10_files(data_root):
+        raise RuntimeError(f"CIFAR-10 archive was extracted but required files were not found in {data_root}.")
+    print(f"CIFAR-10 is ready: {data_root / CIFAR10_FOLDER}", flush=True)
+
+
+def _ensure_cifar10_data(data_root: Path, download: bool, timeout_seconds: int | None) -> None:
+    if _has_cifar10_files(data_root):
+        print(f"CIFAR-10 found locally: {data_root / CIFAR10_FOLDER}", flush=True)
         return
 
-    previous_timeout = socket.getdefaulttimeout()
-    socket.setdefaulttimeout(timeout_seconds)
-    try:
-        yield
-    finally:
-        socket.setdefaulttimeout(previous_timeout)
+    if not download:
+        raise FileNotFoundError(
+            f"CIFAR-10 was not found in {data_root}. "
+            "Expected ./data/cifar-10-batches-py with data_batch_1 ... test_batch."
+        )
+
+    print(
+        f"CIFAR-10 was not found in {data_root}. "
+        f"Downloading with visible progress; socket timeout={timeout_seconds}s.",
+        flush=True,
+    )
+    archive_path = _download_cifar10_archive(data_root, timeout_seconds)
+    _extract_cifar10_archive(archive_path, data_root)
 
 
 def _dataset_error_message(data_root: Path, timeout_seconds: int | None) -> str:
@@ -131,39 +250,28 @@ def build_cifar10_dataloaders(
     data_root = Path(data_root)
     train_transform, eval_transform = build_transforms(image_size=image_size)
 
-    data_ready = _has_cifar10_files(data_root)
-    if download and not data_ready:
-        print(
-            f"CIFAR-10 was not found in {data_root}. "
-            f"torchvision will download it now; timeout={download_timeout}s.",
-            flush=True,
-        )
-    elif not download and not data_ready:
-        raise FileNotFoundError(
-            f"CIFAR-10 was not found in {data_root}. "
-            "Expected ./data/cifar-10-batches-py with data_batch_1 ... test_batch."
-        )
-
     try:
-        with _temporary_socket_timeout(download_timeout if download and not data_ready else None):
-            train_dataset = datasets.CIFAR10(
-                root=data_root,
-                train=True,
-                transform=train_transform,
-                download=download,
-            )
-            val_dataset = datasets.CIFAR10(
-                root=data_root,
-                train=True,
-                transform=eval_transform,
-                download=False,
-            )
-            test_dataset = datasets.CIFAR10(
-                root=data_root,
-                train=False,
-                transform=eval_transform,
-                download=download,
-            )
+        _ensure_cifar10_data(data_root, download=download, timeout_seconds=download_timeout)
+        train_dataset = datasets.CIFAR10(
+            root=data_root,
+            train=True,
+            transform=train_transform,
+            download=False,
+        )
+        val_dataset = datasets.CIFAR10(
+            root=data_root,
+            train=True,
+            transform=eval_transform,
+            download=False,
+        )
+        test_dataset = datasets.CIFAR10(
+            root=data_root,
+            train=False,
+            transform=eval_transform,
+            download=False,
+        )
+    except FileNotFoundError:
+        raise
     except Exception as exc:
         raise RuntimeError(_dataset_error_message(data_root, download_timeout)) from exc
 
