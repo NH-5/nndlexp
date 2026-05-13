@@ -29,6 +29,7 @@ RUN_CONFIG = {
     "val_fraction": 0.1,
     "num_workers": 2,
     "download": True,
+    "download_timeout_seconds": 60,
     "use_tensorboard": True,
     # Keep these as None for the full CIFAR-10 experiment. Set small integers
     # here for local smoke tests without changing the no-CLI workflow.
@@ -119,12 +120,17 @@ def main() -> None:
         paths["logs"] / "run_config.json",
     )
     print(f"Device: {device}")
-    print(f"Experiment directory: {paths['experiment']}")
+    print(f"Experiment directory: {paths['experiment']}", flush=True)
 
     results: dict[str, dict] = {}
 
     for model_name in ("cnn", "vit"):
         model_config = MODEL_CONFIGS[model_name]
+        print(
+            f"Loading CIFAR-10 for {model_name} "
+            f"from {RUN_CONFIG['data_root']} (download={RUN_CONFIG['download']})",
+            flush=True,
+        )
         loaders = build_cifar10_dataloaders(
             data_root=RUN_CONFIG["data_root"],
             batch_size=model_config["batch_size"],
@@ -137,6 +143,7 @@ def main() -> None:
             train_subset=RUN_CONFIG["train_subset"],
             val_subset=RUN_CONFIG["val_subset"],
             test_subset=RUN_CONFIG["test_subset"],
+            download_timeout=RUN_CONFIG["download_timeout_seconds"],
         )
         print(
             f"{model_name} data | train={loaders.train_size} "
@@ -218,4 +225,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

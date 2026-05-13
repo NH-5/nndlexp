@@ -50,6 +50,7 @@ uv run python exp4/main.py
 主要配置位于 `exp4/main.py` 顶部：
 
 - `RUN_CONFIG`：随机种子、设备、数据路径、输出路径、图像尺寸、是否下载数据、是否限制样本量。
+- `download_timeout_seconds`：CIFAR-10 联网下载的 socket 超时时间。服务器网络不通时会快速报错，避免无提示卡住。
 - `MODEL_CONFIGS`：CNN 和 ViT 的 epoch、batch size、学习率、权重衰减、ViT 训练模式。
 
 完整实验保持 `train_subset`、`val_subset`、`test_subset` 为 `None`。本地快速冒烟测试可把它们改成小整数。
@@ -92,6 +93,7 @@ exp4/outputs/{时间戳}/
 
 1. `ImportError: cannot import name 'ViT_B_16_Weights'`：服务器 torchvision 版本过旧。当前代码已做兼容，新版环境使用官方预训练 ViT，旧版环境会退回到轻量级 ViT；如果想严格使用官方预训练 ViT，请升级 torchvision。
 2. ViT 权重下载失败：确认网络可访问 PyTorch 权重地址，或先手动缓存 torchvision 的 ViT-B/16 权重。
-3. CPU 训练过慢：优先使用 CUDA 或 Mac MPS；也可以临时设置 `train_subset`、`val_subset`、`test_subset` 做小样本调试。
-4. MPS 显存不足：减小 `MODEL_CONFIGS["vit"]["batch_size"]`，或保持默认 `head_only` 训练模式。
-5. TensorBoard 不生成：安装 `tensorboard` 后重新运行；不安装不会影响普通日志、图片和指标输出。
+3. 运行停在 `RequestsDependencyWarning` 附近：通常不是 warning 本身的问题，而是 CIFAR-10 正在下载或服务器无法访问官方数据源。手动把解压后的 `cifar-10-batches-py` 放到仓库根目录 `data/` 下，再把 `RUN_CONFIG["download"]` 改为 `False`。
+4. CPU 训练过慢：优先使用 CUDA 或 Mac MPS；也可以临时设置 `train_subset`、`val_subset`、`test_subset` 做小样本调试。
+5. MPS 显存不足：减小 `MODEL_CONFIGS["vit"]["batch_size"]`，或保持默认 `head_only` 训练模式。
+6. TensorBoard 不生成：安装 `tensorboard` 后重新运行；不安装不会影响普通日志、图片和指标输出。
