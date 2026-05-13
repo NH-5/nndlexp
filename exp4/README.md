@@ -37,7 +37,7 @@ uv sync
 
 `SimpleCNN` 位于 `models/cnn.py`，结构为三组 `Conv2d + BatchNorm2d + ReLU + MaxPool2d`，随后使用 `AdaptiveAvgPool2d` 和两层全连接分类器输出 10 类。
 
-`build_vit_model` 位于 `models/vit.py`，默认加载 `ViT_B_16_Weights.DEFAULT` ImageNet 预训练权重，替换最后分类头为 10 类输出。`train_mode="head_only"` 只训练分类头，`train_mode="full"` 微调整个 ViT。
+`build_vit_model` 位于 `models/vit.py`。在新版 torchvision 中会加载 `ViT_B_16_Weights.DEFAULT` ImageNet 预训练权重并替换最后分类头为 10 类输出；在较旧但仍提供 `vit_b_16` 的 torchvision 中会自动兼容旧的 `pretrained=` 参数；如果服务器的 torchvision 完全没有 ViT，则退回到一个轻量级自实现 ViT，保证代码可以继续运行。`train_mode="head_only"` 只训练分类头，`train_mode="full"` 微调整个 ViT。
 
 ## 运行方法
 
@@ -90,8 +90,8 @@ exp4/outputs/{时间戳}/
 
 ## 常见问题
 
-1. ViT 权重下载失败：确认网络可访问 PyTorch 权重地址，或先手动缓存 torchvision 的 ViT-B/16 权重。
-2. CPU 训练过慢：优先使用 CUDA 或 Mac MPS；也可以临时设置 `train_subset`、`val_subset`、`test_subset` 做小样本调试。
-3. MPS 显存不足：减小 `MODEL_CONFIGS["vit"]["batch_size"]`，或保持默认 `head_only` 训练模式。
-4. TensorBoard 不生成：安装 `tensorboard` 后重新运行；不安装不会影响普通日志、图片和指标输出。
-
+1. `ImportError: cannot import name 'ViT_B_16_Weights'`：服务器 torchvision 版本过旧。当前代码已做兼容，新版环境使用官方预训练 ViT，旧版环境会退回到轻量级 ViT；如果想严格使用官方预训练 ViT，请升级 torchvision。
+2. ViT 权重下载失败：确认网络可访问 PyTorch 权重地址，或先手动缓存 torchvision 的 ViT-B/16 权重。
+3. CPU 训练过慢：优先使用 CUDA 或 Mac MPS；也可以临时设置 `train_subset`、`val_subset`、`test_subset` 做小样本调试。
+4. MPS 显存不足：减小 `MODEL_CONFIGS["vit"]["batch_size"]`，或保持默认 `head_only` 训练模式。
+5. TensorBoard 不生成：安装 `tensorboard` 后重新运行；不安装不会影响普通日志、图片和指标输出。
