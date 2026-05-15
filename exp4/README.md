@@ -27,11 +27,23 @@ uv sync
 
 - 训练集：`train=True`
 - 测试集：`train=False`
-- 自动下载：`download=True`
+- 自动下载：`download=True`；服务器网络不好时建议手动下载
 - 保存路径：仓库根目录 `./data`
 - 类别：`airplane`、`automobile`、`bird`、`cat`、`deer`、`dog`、`frog`、`horse`、`ship`、`truck`
 
 训练集会按 `9:1` 划分为训练集和验证集。训练和测试图像统一 resize 到 `224 x 224`，并使用 CIFAR-10 的均值和标准差归一化。
+
+手动下载数据集流程：
+
+1. 在网络好的机器下载 `https://www.cs.toronto.edu/~kriz/cifar-10-python.tar.gz`。
+2. 上传到服务器仓库根目录的 `data/cifar-10-python.tar.gz`。
+3. 在服务器仓库根目录运行：
+
+```bash
+python exp4/download_cifar10.py
+```
+
+脚本会校验 MD5，正确后自动解压出 `data/cifar-10-batches-py/`。校验通过后可以把 `exp4/main.py` 里的 `RUN_CONFIG["download"]` 改为 `False`，训练阶段就只读取本地数据。
 
 ## 模型介绍
 
@@ -46,6 +58,8 @@ uv sync
 ```bash
 uv run python exp4/main.py
 ```
+
+Notebook 版本位于 `exp4/vit_cifar10_experiment.ipynb`，可以在 Jupyter 中按单元格运行同一套流程。
 
 主要配置位于 `exp4/main.py` 顶部：
 
@@ -93,7 +107,7 @@ exp4/outputs/{时间戳}/
 
 1. `ImportError: cannot import name 'ViT_B_16_Weights'`：服务器 torchvision 版本过旧。当前代码已做兼容，新版环境使用官方预训练 ViT，旧版环境会退回到轻量级 ViT；如果想严格使用官方预训练 ViT，请升级 torchvision。
 2. ViT 权重下载失败：确认网络可访问 PyTorch 权重地址，或先手动缓存 torchvision 的 ViT-B/16 权重。
-3. 运行停在 `RequestsDependencyWarning` 附近：通常不是 warning 本身的问题，而是 CIFAR-10 正在下载或服务器无法访问官方数据源。当前代码会输出 `Downloading CIFAR-10: 已下载 / 总大小 (百分比) at 速度`；如果没有看到这类进度，说明还没有真正开始传输数据。也可以手动把解压后的 `cifar-10-batches-py` 放到仓库根目录 `data/` 下，再把 `RUN_CONFIG["download"]` 改为 `False`。
+3. 运行停在 `RequestsDependencyWarning` 附近：通常不是 warning 本身的问题，而是 CIFAR-10 正在下载或服务器无法访问官方数据源。当前代码会输出 `Downloading CIFAR-10: 已下载 / 总大小 (百分比) at 速度`；如果没有看到这类进度，说明还没有真正开始传输数据。建议按上面的手动下载流程上传 `data/cifar-10-python.tar.gz`，再运行 `python exp4/download_cifar10.py` 解压。
 4. CPU 训练过慢：优先使用 CUDA 或 Mac MPS；也可以临时设置 `train_subset`、`val_subset`、`test_subset` 做小样本调试。
 5. MPS 显存不足：减小 `MODEL_CONFIGS["vit"]["batch_size"]`，或保持默认 `head_only` 训练模式。
 6. TensorBoard 不生成：安装 `tensorboard` 后重新运行；不安装不会影响普通日志、图片和指标输出。
