@@ -27,3 +27,6 @@ VOC2012
 *.docx
 model
 outputs
+
+# exp4
+exp4/data
