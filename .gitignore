@@ -30,3 +30,8 @@ outputs
 
 # exp4
 exp4/data
+exp4/report_assets
+
+# exp5
+exp5/data
+exp5/*.pdf
