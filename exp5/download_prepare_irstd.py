@@ -31,7 +31,7 @@ import zipfile
 from dataclasses import dataclass
 from http.cookiejar import CookieJar
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Optional
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -90,7 +90,7 @@ def canonical_dataset_name(value: str) -> str:
     raise ValueError(f"Unsupported dataset {value!r}. Choose from: {', '.join(DATASET_SOURCES)}")
 
 
-def format_bytes(size: int | None) -> str:
+def format_bytes(size: Optional[int]) -> str:
     if size is None:
         return "unknown size"
     units = ["B", "KB", "MB", "GB", "TB"]
@@ -102,14 +102,14 @@ def format_bytes(size: int | None) -> str:
     return f"{size} B"
 
 
-def drive_download_url(file_id: str, confirm: str | None = None) -> str:
+def drive_download_url(file_id: str, confirm: Optional[str] = None) -> str:
     query = {"export": "download", "id": file_id}
     if confirm:
         query["confirm"] = confirm
     return "https://drive.google.com/uc?" + urllib.parse.urlencode(query)
 
 
-def get_drive_confirm_token(text: str, cookies: CookieJar) -> str | None:
+def get_drive_confirm_token(text: str, cookies: CookieJar) -> Optional[str]:
     for cookie in cookies:
         if cookie.name.startswith("download_warning"):
             return cookie.value
@@ -231,7 +231,7 @@ def is_archive_path(path: Path) -> bool:
     )
 
 
-def find_nested_archive(root: Path, dataset: str) -> Path | None:
+def find_nested_archive(root: Path, dataset: str) -> Optional[Path]:
     dataset_key = normalize_key(dataset)
     archives = [path for path in root.rglob("*") if is_archive_path(path)]
     if not archives:
@@ -347,7 +347,7 @@ def split_file_score(path: Path, dataset: str, kind: str) -> int:
     return score
 
 
-def discover_split_file(dataset_root: Path, dataset: str, kind: str) -> Path | None:
+def discover_split_file(dataset_root: Path, dataset: str, kind: str) -> Optional[Path]:
     candidates = [path for path in dataset_root.rglob("*.txt") if path.is_file()]
     scored = [(split_file_score(path, dataset, kind), path) for path in candidates]
     scored = [(score, path) for score, path in scored if score > 0]
@@ -516,7 +516,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: Optional[list[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
