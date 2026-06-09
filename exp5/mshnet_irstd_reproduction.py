@@ -19,6 +19,8 @@
 # In[ ]:
 
 
+import csv
+import json
 import math
 import os
 import random
@@ -26,6 +28,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass, asdict, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
@@ -108,6 +111,7 @@ class ExperimentConfig:
     max_train_batches: Optional[int] = None
     max_eval_batches: Optional[int] = None
     save_checkpoints: bool = True
+    save_experiment_logs: bool = True
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
 CFG = ExperimentConfig()
@@ -623,7 +627,7 @@ class IRSTDMetrics:
 
 # ## 8. 训练与验证循环
 #
-# 默认会按 `CFG.dataset_runs` 依次训练 `IRSTD-1k` 和 `NUDT-SIRST`，每个数据集都重新初始化一个 MSHNet，checkpoint 分别保存到 `exp5/outputs/<dataset>/`。要临时快速检查，可以把 `CFG.epochs` 改小、设置 `CFG.max_train_batches = 2`、`CFG.max_eval_batches = 5`、并关闭 `CFG.save_checkpoints`。论文报告的设置是 `batch_size=4`、`lr=0.05`、`AdaGrad`、`400 epochs`。
+# 默认会按 `CFG.dataset_runs` 依次训练 `IRSTD-1k` 和 `NUDT-SIRST`，每个数据集都重新初始化一个 MSHNet，checkpoint 和实验记录分别保存到 `exp5/outputs/<dataset>/`。每个 epoch 会写入 `history.csv` / `history.json`，并在 `exp5/outputs/summary.csv` 汇总两个数据集。要临时快速检查，可以把 `CFG.epochs` 改小、设置 `CFG.max_train_batches = 2`、`CFG.max_eval_batches = 5`、并关闭 `CFG.save_checkpoints`。论文报告的设置是 `batch_size=4`、`lr=0.05`、`AdaGrad`、`400 epochs`。
 
 # In[ ]:
 
@@ -700,6 +704,116 @@ def save_checkpoint(model: nn.Module, cfg: ExperimentConfig, dataset_name: str, 
     return ckpt_path
 
 
+def to_serializable(value: object) -> object:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, dict):
+        return {str(k): to_serializable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [to_serializable(v) for v in value]
+    return value
+
+
+def write_json(path: Path, payload: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(to_serializable(payload), f, ensure_ascii=False, indent=2)
+        f.write("\n")
+
+
+def write_history_csv(path: Path, history: List[Dict[str, float]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = ["dataset", "epoch", "loss", "IoU", "Pd", "Fa", "Fa_x1e6"]
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in history:
+            csv_row = {key: row.get(key, "") for key in fieldnames}
+            csv_row["Fa_x1e6"] = float(row.get("Fa", 0.0)) * 1_000_000
+            writer.writerow(csv_row)
+
+
+def best_history_row(history: List[Dict[str, float]]) -> Optional[Dict[str, float]]:
+    if not history:
+        return None
+    return max(history, key=lambda row: float(row.get("IoU", 0.0)))
+
+
+def save_experiment_records(
+    cfg: ExperimentConfig,
+    dataset_name: str,
+    history: List[Dict[str, float]],
+    best_path: Optional[Path],
+    data_source: str,
+) -> None:
+    output_dir = cfg.output_root / safe_name(dataset_name)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    now = datetime.now().isoformat(timespec="seconds")
+    write_json(output_dir / "config.json", {
+        "dataset": dataset_name,
+        "data_source": data_source,
+        "created_or_updated_at": now,
+        "config": asdict(cfg),
+    })
+    write_history_csv(output_dir / "history.csv", history)
+    write_json(output_dir / "history.json", history)
+    write_json(output_dir / "latest_metrics.json", {
+        "dataset": dataset_name,
+        "data_source": data_source,
+        "updated_at": now,
+        "epochs_recorded": len(history),
+        "latest": history[-1] if history else None,
+        "best": best_history_row(history),
+        "best_checkpoint": best_path,
+    })
+
+
+def save_all_results_summary(training_results: Dict[str, Dict[str, object]], cfg: ExperimentConfig) -> None:
+    rows: List[Dict[str, object]] = []
+    for dataset_name, result in training_results.items():
+        dataset_history = result["history"]
+        if not dataset_history:
+            continue
+        latest = dataset_history[-1]
+        best = best_history_row(dataset_history)
+        rows.append({
+            "dataset": dataset_name,
+            "epochs_recorded": len(dataset_history),
+            "latest_epoch": latest["epoch"],
+            "latest_loss": latest["loss"],
+            "latest_IoU": latest["IoU"],
+            "latest_Pd": latest["Pd"],
+            "latest_Fa": latest["Fa"],
+            "latest_Fa_x1e6": latest["Fa"] * 1_000_000,
+            "best_epoch": best["epoch"] if best else "",
+            "best_IoU": best["IoU"] if best else "",
+            "best_Pd": best["Pd"] if best else "",
+            "best_Fa": best["Fa"] if best else "",
+            "best_Fa_x1e6": best["Fa"] * 1_000_000 if best else "",
+            "best_checkpoint": result.get("best_path"),
+            "data_source": result.get("data_source", ""),
+        })
+
+    cfg.output_root.mkdir(parents=True, exist_ok=True)
+    summary_csv = cfg.output_root / "summary.csv"
+    fieldnames = [
+        "dataset", "epochs_recorded", "latest_epoch", "latest_loss", "latest_IoU", "latest_Pd",
+        "latest_Fa", "latest_Fa_x1e6", "best_epoch", "best_IoU", "best_Pd", "best_Fa",
+        "best_Fa_x1e6", "best_checkpoint", "data_source",
+    ]
+    with summary_csv.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: to_serializable(row.get(key, "")) for key in fieldnames})
+    write_json(cfg.output_root / "summary.json", rows)
+    print(f"Experiment summary saved to {summary_csv}")
+
+
 def run_training_for_dataset(dataset_name: str, dataset_dir: Path, base_cfg: ExperimentConfig) -> Dict[str, object]:
     print(f"\n===== Training {dataset_name} =====")
     cfg = replace(base_cfg, dataset_dir=Path(dataset_dir))
@@ -743,12 +857,18 @@ def run_training_for_dataset(dataset_name: str, dataset_dir: Path, base_cfg: Exp
                 best_iou = metrics["IoU"]
                 if cfg.save_checkpoints:
                     best_path = save_checkpoint(model, cfg, dataset_name, metrics, epoch)
+            if cfg.save_experiment_logs:
+                save_experiment_records(cfg, dataset_name, history, best_path, data_source)
+        if cfg.save_experiment_logs:
+            save_experiment_records(cfg, dataset_name, history, best_path, data_source)
         if cfg.save_checkpoints:
             print(f"Best checkpoint for {dataset_name}: {best_path}")
         else:
             print(f"Checkpoint saving is disabled for {dataset_name}.")
     else:
         print(f"CFG.run_smoke_train is False; skip training {dataset_name}.")
+        if cfg.save_experiment_logs:
+            save_experiment_records(cfg, dataset_name, history, best_path, data_source)
 
     model = model.to("cpu")
     if torch.cuda.is_available():
@@ -776,6 +896,9 @@ history: List[Dict[str, float]] = [
     for row in result["history"]
 ]
 
+if CFG.save_experiment_logs:
+    save_all_results_summary(training_results, CFG)
+
 if training_results:
     first_result = next(iter(training_results.values()))
     model = first_result["model"]
@@ -784,7 +907,7 @@ if training_results:
 
 # ## 9. 结果曲线与预测可视化
 #
-# 下面会分别展示每个数据集的训练曲线和预测效果。真实训练时重点看 IoU、Pd、Fa；论文表格中的 `Fa` 单位常写成 `x10^-6`，这里也输出 `Fa_x1e6`。
+# 下面会分别展示每个数据集的训练曲线和预测效果。真实训练时重点看 IoU、Pd、Fa；论文表格中的 `Fa` 单位常写成 `x10^-6`，这里也输出 `Fa_x1e6`。完整实验记录同时保存在 `exp5/outputs/<dataset>/history.csv` 和 `exp5/outputs/summary.csv`。
 
 # In[ ]:
 
