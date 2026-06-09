@@ -14,7 +14,7 @@
 
 # ## 1. 环境与依赖
 #
-# 项目 `pyproject.toml` 已声明 `torch`、`torchvision`、`opencv-python`、`matplotlib`、`numpy`、`tqdm` 等依赖。真实训练建议使用 GPU；论文设置为输入 `256 x 256`、batch size 4、AdaGrad、学习率 0.05、训练 400 epochs。
+# 项目 `pyproject.toml` 已声明 `torch`、`torchvision`、`matplotlib`、`numpy`、`tqdm` 等依赖。真实训练建议使用 GPU；论文设置为输入 `256 x 256`、batch size 4、AdaGrad、学习率 0.05、训练 400 epochs。
 
 # In[ ]:
 
@@ -27,6 +27,7 @@ import random
 import sys
 import tempfile
 import time
+from collections import deque
 from dataclasses import dataclass, asdict, replace
 from datetime import datetime
 from pathlib import Path
@@ -48,9 +49,16 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
 
 try:
-    import cv2
+    RESAMPLE_BILINEAR = Image.Resampling.BILINEAR
+    RESAMPLE_NEAREST = Image.Resampling.NEAREST
+except AttributeError:
+    RESAMPLE_BILINEAR = Image.BILINEAR
+    RESAMPLE_NEAREST = Image.NEAREST
+
+try:
+    from scipy import ndimage as scipy_ndimage
 except Exception:
-    cv2 = None
+    scipy_ndimage = None
 
 PROJECT_ROOT = Path.cwd()
 EXP_ROOT = PROJECT_ROOT / "exp5" if (PROJECT_ROOT / "exp5").exists() else PROJECT_ROOT
@@ -153,7 +161,7 @@ def mask_to_tensor(mask: Image.Image) -> torch.Tensor:
 
 
 def resize_pair(image: Image.Image, mask: Image.Image, size: int) -> Tuple[Image.Image, Image.Image]:
-    return image.resize((size, size), Image.BILINEAR), mask.resize((size, size), Image.NEAREST)
+    return image.resize((size, size), RESAMPLE_BILINEAR), mask.resize((size, size), RESAMPLE_NEAREST)
 
 
 class IRSTDDataset(Dataset):
@@ -201,8 +209,8 @@ class IRSTDDataset(Dataset):
             ow = long_size
             oh = max(1, int(h * long_size / w + 0.5))
             short_size = oh
-        image = image.resize((ow, oh), Image.BILINEAR)
-        mask = mask.resize((ow, oh), Image.NEAREST)
+        image = image.resize((ow, oh), RESAMPLE_BILINEAR)
+        mask = mask.resize((ow, oh), RESAMPLE_NEAREST)
 
         if short_size < self.crop_size:
             pad_w = max(0, self.crop_size - ow)
@@ -537,17 +545,20 @@ print(f"SLS loss smoke value: {float(loss_value.detach().cpu()):.4f}")
 
 
 def binary_components(mask: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    mask = (mask > 0).astype(np.uint8)
+    mask = np.asarray(mask > 0, dtype=np.uint8)
     if mask.sum() == 0:
         return np.zeros((0, 2), dtype=np.float32), np.zeros((0,), dtype=np.float32)
 
-    if cv2 is not None:
-        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
-        if num_labels <= 1:
+    if scipy_ndimage is not None:
+        structure = np.ones((3, 3), dtype=np.uint8)
+        labels, num_labels = scipy_ndimage.label(mask, structure=structure)
+        if num_labels == 0:
             return np.zeros((0, 2), dtype=np.float32), np.zeros((0,), dtype=np.float32)
-        centers = centroids[1:].astype(np.float32)[:, ::-1]  # y, x
-        areas = stats[1:, cv2.CC_STAT_AREA].astype(np.float32)
-        return centers, areas
+        label_ids = np.arange(1, num_labels + 1)
+        centers = np.asarray(scipy_ndimage.center_of_mass(mask, labels, label_ids), dtype=np.float32)
+        areas = np.asarray(scipy_ndimage.sum(mask, labels, label_ids), dtype=np.float32)
+        valid = np.isfinite(centers).all(axis=1) & (areas > 0)
+        return centers[valid], areas[valid]
 
     visited = np.zeros_like(mask, dtype=bool)
     centers: List[Tuple[float, float]] = []
@@ -558,20 +569,23 @@ def binary_components(mask: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         for x0 in range(w):
             if mask[y0, x0] == 0 or visited[y0, x0]:
                 continue
-            stack = [(y0, x0)]
+            queue = deque([(y0, x0)])
             visited[y0, x0] = True
-            coords = []
-            while stack:
-                y, x = stack.pop()
-                coords.append((y, x))
+            count = 0
+            sum_y = 0.0
+            sum_x = 0.0
+            while queue:
+                y, x = queue.pop()
+                count += 1
+                sum_y += y
+                sum_x += x
                 for dy, dx in neighbors:
                     ny, nx = y + dy, x + dx
                     if 0 <= ny < h and 0 <= nx < w and mask[ny, nx] and not visited[ny, nx]:
                         visited[ny, nx] = True
-                        stack.append((ny, nx))
-            arr = np.asarray(coords, dtype=np.float32)
-            centers.append(tuple(arr.mean(axis=0)))
-            areas.append(len(coords))
+                        queue.append((ny, nx))
+            centers.append((sum_y / count, sum_x / count))
+            areas.append(count)
     return np.asarray(centers, dtype=np.float32), np.asarray(areas, dtype=np.float32)
 
 
